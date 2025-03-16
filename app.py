@@ -5,6 +5,17 @@ from sqlalchemy.pool import StaticPool
 import streamlit_authenticator as stauth
 import yaml
 from yaml.loader import SafeLoader
+import bcrypt  
+
+# -----------------------------
+# MANUALLY HASH PASSWORDS USING BCRYPT
+# -----------------------------
+def hash_password(password: str) -> str:
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode(), salt).decode()
+
+# Hash the passwords for your users
+hashed_passwords = [hash_password("password1"), hash_password("password2")]
 
 # -----------------------------
 # CONFIGURATION FOR AUTHENTICATION
@@ -14,17 +25,17 @@ config = {
         "usernames": {
             "user1": {
                 "name": "User One",
-                "password": "password1"  # In production, use hashed passwords!
+                "password": hashed_passwords[0]  # Hashed version of "password1"
             },
             "user2": {
                 "name": "User Two",
-                "password": "password2"
+                "password": hashed_passwords[1]  # Hashed version of "password2"
             }
         }
     },
     "cookie": {
         "expiry_days": 30,
-        "key": "some_signature_key",  # Change to a secure key
+        "key": "some_signature_key",  # Change this to a secure key in production!
         "name": "some_cookie_name"
     },
     "preauthorized": {
@@ -32,7 +43,13 @@ config = {
     }
 }
 
-# Initialize the authenticator
+# Optionally, load configuration from a YAML file:
+# with open('config.yaml') as file:
+#     config = yaml.load(file, Loader=SafeLoader)
+
+# -----------------------------
+# INITIALIZE THE AUTHENTICATOR
+# -----------------------------
 authenticator = stauth.Authenticate(
     config["credentials"],
     config["cookie"]["name"],
@@ -40,7 +57,7 @@ authenticator = stauth.Authenticate(
     config["cookie"]["expiry_days"]
 )
 
-# Optionally, display version info for debugging (if available)
+# Optionally display version info for debugging
 if hasattr(stauth, "__version__"):
     st.write(f"streamlit_authenticator version: {stauth.__version__}")
 else:
@@ -53,6 +70,7 @@ st.title("Login")
 login_result = authenticator.login(location="main")
 if login_result is None:
     st.stop()
+
 name, authentication_status, username = login_result
 
 # -----------------------------
@@ -64,7 +82,6 @@ if authentication_status:
     # -----------------------------
     # SET UP A TEMPORARY DATABASE
     # -----------------------------
-    # Configure the engine to use StaticPool to persist the in-memory DB across connections.
     engine = create_engine(
         "sqlite:///:memory:",
         echo=False,
@@ -72,7 +89,6 @@ if authentication_status:
         poolclass=StaticPool
     )
     
-    # Create a temporary table and insert sample data.
     with engine.connect() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS your_table (
