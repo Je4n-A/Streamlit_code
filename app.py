@@ -6,7 +6,9 @@ import streamlit_authenticator as stauth
 import yaml
 from yaml.loader import SafeLoader
 import bcrypt
-import plotly.express as px  # You might need to pip install plotly
+import plotly.express as px
+import yfinance as yf
+import datetime
 
 # -----------------------------
 # PAGE CONFIGURATION
@@ -62,13 +64,40 @@ authenticator = stauth.Authenticate(
 # -----------------------------
 # LOGIN SECTION
 # -----------------------------
+# Display credentials for demo purposes
+st.info("### Demo Credentials\n* **Admin:** admin / admin123\n* **Analyst:** analyst / analyst123")
+
 # Try/Except block to handle different version signatures of streamlit-authenticator
+name, authentication_status, username = None, None, None
+
 try:
-    # Newer versions
-    name, authentication_status, username = authenticator.login("main")
-except TypeError:
-    # Older versions
-    name, authentication_status, username = authenticator.login("Login", "main")
+    # Try with explicit location keyword
+    result = authenticator.login(location="main")
+    if result is not None:
+        name, authentication_status, username = result
+    else:
+        name = st.session_state.get('name')
+        authentication_status = st.session_state.get('authentication_status')
+        username = st.session_state.get('username')
+except (TypeError, ValueError):
+    try:
+        # Older versions
+        result = authenticator.login("Login", "main")
+        if result is not None:
+            name, authentication_status, username = result
+        else:
+            name = st.session_state.get('name')
+            authentication_status = st.session_state.get('authentication_status')
+            username = st.session_state.get('username')
+    except (TypeError, ValueError):
+        # Fallback
+        result = authenticator.login()
+        if result is not None:
+            name, authentication_status, username = result
+        else:
+            name = st.session_state.get('name')
+            authentication_status = st.session_state.get('authentication_status')
+            username = st.session_state.get('username')
 
 if authentication_status is False:
     st.error("Username/password is incorrect")
@@ -123,17 +152,58 @@ if authentication_status:
         # Check if empty to avoid duplicate inserts on rerun
         result = conn.execute(text("SELECT count(*) FROM financial_metrics"))
         if result.scalar() == 0:
-            conn.execute(text("""
-                INSERT INTO financial_metrics (month, year, revenue, expenses, department) VALUES
-                    ('Jan', 2024, 150000, 90000, 'Sales'),
-                    ('Feb', 2024, 160000, 95000, 'Sales'),
-                    ('Mar', 2024, 175000, 92000, 'Sales'),
-                    ('Jan', 2024, 80000, 70000, 'IT'),
-                    ('Feb', 2024, 82000, 71000, 'IT'),
-                    ('Mar', 2024, 85000, 68000, 'IT'),
-                    ('Jan', 2023, 120000, 85000, 'Sales'),
-                    ('Feb', 2023, 130000, 88000, 'Sales')
-            """))
+            data_to_insert = []
+            
+            # ---------------------------------------------------------
+            # FETCH REAL-WORLD DATA VIA YFINANCE (Test Data API)
+            # ---------------------------------------------------------
+            # We use Microsoft (MSFT) stock history to simulate financial trends.
+            # This acts as our "Test Data API".
+            try:
+                ticker = "MSFT"
+                stock = yf.Ticker(ticker)
+                # Fetch 2 years of monthly data
+                history = stock.history(period="2y", interval="1mo")
+                
+                # Process the data to fit our schema
+                for date, row in history.iterrows():
+                    # Simulate Revenue based on Stock Price * Volume (scaled)
+                    # This creates realistic-looking fluctuations
+                    simulated_revenue = (row['Close'] * row['Volume']) / 1_000_000_000 * 50000 
+                    simulated_expenses = simulated_revenue * 0.65  # Assume 65% profit margin
+                    
+                    month_name = date.strftime('%b')
+                    year = date.year
+                    
+                    # Split into departments
+                    data_to_insert.append({
+                        "month": month_name, "year": year, 
+                        "revenue": simulated_revenue * 0.6, "expenses": simulated_expenses * 0.6, 
+                        "department": "Sales"
+                    })
+                    data_to_insert.append({
+                        "month": month_name, "year": year, 
+                        "revenue": simulated_revenue * 0.4, "expenses": simulated_expenses * 0.4, 
+                        "department": "IT"
+                    })
+                    
+                st.toast(f"Successfully loaded real-world test data for {ticker} via yfinance API!", icon="✅")
+                
+            except Exception as e:
+                st.error(f"Failed to fetch API data: {e}")
+                # Fallback data if API fails
+                data_to_insert = [
+                    {'month': 'Jan', 'year': 2024, 'revenue': 150000, 'expenses': 90000, 'department': 'Sales'},
+                    {'month': 'Feb', 'year': 2024, 'revenue': 160000, 'expenses': 95000, 'department': 'Sales'},
+                    {'month': 'Jan', 'year': 2024, 'revenue': 80000, 'expenses': 70000, 'department': 'IT'},
+                ]
+
+            # Insert data
+            for row in data_to_insert:
+                conn.execute(text("""
+                    INSERT INTO financial_metrics (month, year, revenue, expenses, department) 
+                    VALUES (:month, :year, :revenue, :expenses, :department)
+                """), row)
     
     # -----------------------------
     # DATA ANALYSIS
