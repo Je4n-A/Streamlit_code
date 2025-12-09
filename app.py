@@ -9,11 +9,112 @@ import bcrypt
 import plotly.express as px
 import yfinance as yf
 import datetime
+import os
 
 # -----------------------------
 # PAGE CONFIGURATION
 # -----------------------------
 st.set_page_config(page_title="Financial Reporting Portal", layout="wide")
+
+# -----------------------------
+# MOCK POSTGRESQL CONNECTION
+# -----------------------------
+# Initialize database cache
+@st.cache_resource
+def init_database():
+    # In a real work scenario, you would use: 
+    # engine = create_engine("postgresql+psycopg2://user:password@host:port/dbname")
+    
+    # For this demo, we use SQLite in-memory to simulate the DB
+    engine = create_engine(
+        "sqlite:///:memory:",
+        echo=False,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool
+    )
+    
+    # Seed the database with financial data
+    with engine.connect() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS financial_metrics (
+                id INTEGER PRIMARY KEY,
+                month TEXT,
+                year INTEGER,
+                revenue DECIMAL(10,2),
+                expenses DECIMAL(10,2),
+                department TEXT
+            )
+        """))
+        
+        # Check if empty to avoid duplicate inserts on rerun
+        result = conn.execute(text("SELECT count(*) FROM financial_metrics"))
+        if result.scalar() == 0:
+            data_to_insert = []
+            
+            # ---------------------------------------------------------
+            # FETCH REAL-WORLD DATA VIA YFINANCE (Test Data API)
+            # ---------------------------------------------------------
+            # We use Microsoft (MSFT) stock history to simulate financial trends.
+            # This acts as our "Test Data API".
+            try:
+                ticker = "MSFT"
+                stock = yf.Ticker(ticker)
+                # Fetch 2 years of monthly data
+                history = stock.history(period="2y", interval="1mo")
+                
+                if history.empty:
+                    raise ValueError("No data fetched from yfinance API")
+
+                # Process the data to fit our schema
+                for date, row in history.iterrows():
+                    # Simulate Revenue based on Stock Price * Volume (scaled)
+                    # This creates realistic-looking fluctuations
+                    if pd.isna(row['Close']) or pd.isna(row['Volume']):
+                        continue
+                        
+                    simulated_revenue = (row['Close'] * row['Volume']) / 1_000_000_000 * 50000 
+                    simulated_expenses = simulated_revenue * 0.65  # Assume 65% profit margin
+                    
+                    month_name = date.strftime('%b')
+                    year = date.year
+                    
+                    # Split into departments
+                    data_to_insert.append({
+                        "month": month_name, "year": year, 
+                        "revenue": simulated_revenue * 0.6, "expenses": simulated_expenses * 0.6, 
+                        "department": "Sales"
+                    })
+                    data_to_insert.append({
+                        "month": month_name, "year": year, 
+                        "revenue": simulated_revenue * 0.4, "expenses": simulated_expenses * 0.4, 
+                        "department": "IT"
+                    })
+                
+                if not data_to_insert:
+                    raise ValueError("Data processing resulted in empty dataset")
+
+                # st.toast(f"Successfully loaded real-world test data for {ticker} via yfinance API!", icon="✅")
+                
+            except Exception as e:
+                # st.error(f"Failed to fetch API data: {e}. Using fallback data.")
+                # Fallback data if API fails
+                data_to_insert = [
+                    {'month': 'Jan', 'year': 2024, 'revenue': 150000, 'expenses': 90000, 'department': 'Sales'},
+                    {'month': 'Feb', 'year': 2024, 'revenue': 160000, 'expenses': 95000, 'department': 'Sales'},
+                    {'month': 'Mar', 'year': 2024, 'revenue': 175000, 'expenses': 92000, 'department': 'Sales'},
+                    {'month': 'Jan', 'year': 2024, 'revenue': 80000, 'expenses': 70000, 'department': 'IT'},
+                    {'month': 'Feb', 'year': 2024, 'revenue': 82000, 'expenses': 71000, 'department': 'IT'},
+                    {'month': 'Mar', 'year': 2024, 'revenue': 85000, 'expenses': 68000, 'department': 'IT'},
+                ]
+
+            # Insert data
+            for row in data_to_insert:
+                conn.execute(text("""
+                    INSERT INTO financial_metrics (month, year, revenue, expenses, department) 
+                    VALUES (:month, :year, :revenue, :expenses, :department)
+                """), row)
+            conn.commit()
+    return engine
 
 # -----------------------------
 # MANUALLY HASH PASSWORDS
@@ -110,6 +211,14 @@ elif authentication_status is None:
 # MAIN APPLICATION LOGIC
 # -----------------------------
 if authentication_status:
+    # Initialize database connection
+    engine = init_database()
+
+    # Get year options from database
+    with engine.connect() as conn:
+        years_result = conn.execute(text("SELECT DISTINCT year FROM financial_metrics ORDER BY year DESC"))
+        available_years = [row[0] for row in years_result.fetchall()]
+    
     # Sidebar for navigation and logout
     with st.sidebar:
         st.title(f"Welcome, {name}")
@@ -117,94 +226,15 @@ if authentication_status:
         authenticator.logout("Logout", "sidebar")
         
         st.header("Filters")
-        selected_year = st.selectbox("Select Fiscal Year", [2023, 2024, 2025])
+        if available_years:
+            selected_year = st.selectbox("Select Fiscal Year", available_years)
+        else:
+            st.error("No data available in database")
+            st.stop()
 
     st.title("📊 Executive Financial Dashboard")
     st.markdown("Automated reporting for leadership review.")
 
-    # -----------------------------
-    # MOCK POSTGRESQL CONNECTION
-    # -----------------------------
-    # In a real work scenario, you would use: 
-    # engine = create_engine("postgresql+psycopg2://user:password@host:port/dbname")
-    
-    # For this demo, we use SQLite in-memory to simulate the DB
-    engine = create_engine(
-        "sqlite:///:memory:",
-        echo=False,
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool
-    )
-    
-    # Seed the database with financial data
-    with engine.connect() as conn:
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS financial_metrics (
-                id INTEGER PRIMARY KEY,
-                month TEXT,
-                year INTEGER,
-                revenue DECIMAL(10,2),
-                expenses DECIMAL(10,2),
-                department TEXT
-            )
-        """))
-        
-        # Check if empty to avoid duplicate inserts on rerun
-        result = conn.execute(text("SELECT count(*) FROM financial_metrics"))
-        if result.scalar() == 0:
-            data_to_insert = []
-            
-            # ---------------------------------------------------------
-            # FETCH REAL-WORLD DATA VIA YFINANCE (Test Data API)
-            # ---------------------------------------------------------
-            # We use Microsoft (MSFT) stock history to simulate financial trends.
-            # This acts as our "Test Data API".
-            try:
-                ticker = "MSFT"
-                stock = yf.Ticker(ticker)
-                # Fetch 2 years of monthly data
-                history = stock.history(period="2y", interval="1mo")
-                
-                # Process the data to fit our schema
-                for date, row in history.iterrows():
-                    # Simulate Revenue based on Stock Price * Volume (scaled)
-                    # This creates realistic-looking fluctuations
-                    simulated_revenue = (row['Close'] * row['Volume']) / 1_000_000_000 * 50000 
-                    simulated_expenses = simulated_revenue * 0.65  # Assume 65% profit margin
-                    
-                    month_name = date.strftime('%b')
-                    year = date.year
-                    
-                    # Split into departments
-                    data_to_insert.append({
-                        "month": month_name, "year": year, 
-                        "revenue": simulated_revenue * 0.6, "expenses": simulated_expenses * 0.6, 
-                        "department": "Sales"
-                    })
-                    data_to_insert.append({
-                        "month": month_name, "year": year, 
-                        "revenue": simulated_revenue * 0.4, "expenses": simulated_expenses * 0.4, 
-                        "department": "IT"
-                    })
-                    
-                st.toast(f"Successfully loaded real-world test data for {ticker} via yfinance API!", icon="✅")
-                
-            except Exception as e:
-                st.error(f"Failed to fetch API data: {e}")
-                # Fallback data if API fails
-                data_to_insert = [
-                    {'month': 'Jan', 'year': 2024, 'revenue': 150000, 'expenses': 90000, 'department': 'Sales'},
-                    {'month': 'Feb', 'year': 2024, 'revenue': 160000, 'expenses': 95000, 'department': 'Sales'},
-                    {'month': 'Jan', 'year': 2024, 'revenue': 80000, 'expenses': 70000, 'department': 'IT'},
-                ]
-
-            # Insert data
-            for row in data_to_insert:
-                conn.execute(text("""
-                    INSERT INTO financial_metrics (month, year, revenue, expenses, department) 
-                    VALUES (:month, :year, :revenue, :expenses, :department)
-                """), row)
-    
     # -----------------------------
     # DATA ANALYSIS
     # -----------------------------
