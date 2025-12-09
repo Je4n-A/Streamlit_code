@@ -327,14 +327,18 @@ if authentication_status:
         st.info("Simple linear regression forecast based on current year's monthly data.")
         
         # Prepare data for forecasting
-        forecast_df = df.groupby('month')['revenue'].sum().reset_index()
-        month_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-        forecast_df['month_idx'] = forecast_df['month'].apply(lambda x: month_order.index(x) + 1)
-        forecast_df = forecast_df.sort_values('month_idx')
+        forecast_df = df.groupby(['year', 'month'])['revenue'].sum().reset_index()
+        
+        # Create a proper datetime column for sorting and plotting
+        forecast_df['date_str'] = forecast_df['year'].astype(str) + '-' + forecast_df['month']
+        forecast_df['date'] = pd.to_datetime(forecast_df['date_str'], format='%Y-%b')
+        forecast_df = forecast_df.sort_values('date')
         
         if len(forecast_df) > 1:
-            # Linear Regression
-            x = forecast_df['month_idx'].values
+            # Linear Regression using ordinal dates
+            forecast_df['ordinal_date'] = forecast_df['date'].apply(lambda x: x.toordinal())
+            
+            x = forecast_df['ordinal_date'].values
             y = forecast_df['revenue'].values
             
             # Fit polynomial (degree 1 = linear)
@@ -342,18 +346,13 @@ if authentication_status:
             p = np.poly1d(z)
             
             # Predict next 3 months
-            last_month_idx = x[-1]
-            future_months_idx = np.array([last_month_idx + 1, last_month_idx + 2, last_month_idx + 3])
-            future_revenue = p(future_months_idx)
+            last_date = forecast_df['date'].iloc[-1]
+            future_dates = [last_date + pd.DateOffset(months=i) for i in range(1, 4)]
+            future_ordinals = [d.toordinal() for d in future_dates]
+            future_revenue = p(future_ordinals)
             
-            # Create future dataframe
-            future_months_names = []
-            for idx in future_months_idx:
-                month_num = (int(idx) - 1) % 12
-                future_months_names.append(month_order[month_num])
-                
             future_df = pd.DataFrame({
-                'month': future_months_names,
+                'date': future_dates,
                 'revenue': future_revenue,
                 'type': 'Forecast'
             })
@@ -361,18 +360,20 @@ if authentication_status:
             forecast_df['type'] = 'Historical'
             
             # Combine
-            combined_df = pd.concat([forecast_df[['month', 'revenue', 'type']], future_df])
+            combined_df = pd.concat([forecast_df[['date', 'revenue', 'type']], future_df])
             
             # Plot
             fig_forecast = px.line(
                 combined_df, 
-                x='month', 
+                x='date', 
                 y='revenue', 
                 color='type', 
                 markers=True,
-                line_shape='spline'
+                line_shape='spline',
+                title=f"Revenue Forecast: {selected_year} - Next Quarter"
             )
-            fig_forecast.add_vline(x=forecast_df.iloc[-1]['month'], line_dash="dash", line_color="gray")
+            fig_forecast.update_xaxes(dtick="M1", tickformat="%b %Y")
+            fig_forecast.add_vline(x=last_date, line_dash="dash", line_color="gray")
             st.plotly_chart(fig_forecast, use_container_width=True)
         else:
             st.warning("Not enough data points to generate a forecast.")
