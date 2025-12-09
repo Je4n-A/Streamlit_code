@@ -10,6 +10,7 @@ import plotly.express as px
 import yfinance as yf
 import datetime
 import os
+import numpy as np
 
 # -----------------------------
 # PAGE CONFIGURATION
@@ -218,6 +219,10 @@ if authentication_status:
     with engine.connect() as conn:
         years_result = conn.execute(text("SELECT DISTINCT year FROM financial_metrics ORDER BY year DESC"))
         available_years = [row[0] for row in years_result.fetchall()]
+        
+        # Get departments for filter
+        dept_result = conn.execute(text("SELECT DISTINCT department FROM financial_metrics"))
+        available_depts = [row[0] for row in dept_result.fetchall()]
     
     # Sidebar for navigation and logout
     with st.sidebar:
@@ -231,6 +236,8 @@ if authentication_status:
         else:
             st.error("No data available in database")
             st.stop()
+            
+        selected_depts = st.multiselect("Select Departments", available_depts, default=available_depts)
 
     st.title("📊 Executive Financial Dashboard")
     st.markdown("Automated reporting for leadership review.")
@@ -238,48 +245,148 @@ if authentication_status:
     # -----------------------------
     # DATA ANALYSIS
     # -----------------------------
-    query = text(f"SELECT * FROM financial_metrics WHERE year = {selected_year}")
+    # Base query
+    query_str = f"SELECT * FROM financial_metrics WHERE year = {selected_year}"
+    if selected_depts:
+        depts_str = "', '".join(selected_depts)
+        query_str += f" AND department IN ('{depts_str}')"
+    
+    query = text(query_str)
     df = pd.read_sql(query, engine)
     
-    # Calculate Profit
+    if df.empty:
+        st.warning("No data available for the selected filters.")
+        st.stop()
+    
+    # Calculate Profit & Margin
     df['profit'] = df['revenue'] - df['expenses']
     df['margin'] = (df['profit'] / df['revenue']) * 100
 
-    # KPI Metrics
-    total_revenue = df['revenue'].sum()
-    total_profit = df['profit'].sum()
-    avg_margin = df['margin'].mean()
+    # Create Tabs
+    tab1, tab2, tab3 = st.tabs(["📈 Dashboard", "🔮 Forecasting", "💾 Data & Export"])
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Revenue", f"${total_revenue:,.0f}")
-    col2.metric("Total Profit", f"${total_profit:,.0f}")
-    col3.metric("Avg Margin", f"{avg_margin:.1f}%")
-
-    st.divider()
-
-    # -----------------------------
-    # VISUALIZATIONS
-    # -----------------------------
-    col_chart1, col_chart2 = st.columns(2)
-
-    with col_chart1:
-        st.subheader("Revenue vs Expenses by Month")
-        # Aggregate by month
-        monthly_data = df.groupby('month')[['revenue', 'expenses']].sum().reset_index()
-        # Sort months correctly
-        month_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-        monthly_data['month'] = pd.Categorical(monthly_data['month'], categories=month_order, ordered=True)
-        monthly_data = monthly_data.sort_values('month')
+    with tab1:
+        # KPI Metrics with Deltas (Simulated vs Target/Prev Year)
+        total_revenue = df['revenue'].sum()
+        total_profit = df['profit'].sum()
+        avg_margin = df['margin'].mean()
         
-        fig_bar = px.bar(monthly_data, x='month', y=['revenue', 'expenses'], barmode='group')
-        st.plotly_chart(fig_bar, use_container_width=True)
+        # Simulate targets for demo purposes (e.g., 5% growth target)
+        target_revenue = total_revenue * 0.95
+        target_profit = total_profit * 0.90
+        target_margin = avg_margin * 0.95
 
-    with col_chart2:
-        st.subheader("Profit Distribution by Department")
-        dept_data = df.groupby('department')['profit'].sum().reset_index()
-        fig_pie = px.pie(dept_data, values='profit', names='department', hole=0.4)
-        st.plotly_chart(fig_pie, use_container_width=True)
+        col1, col2, col3 = st.columns(3)
+        col1.metric(
+            "Total Revenue", 
+            f"${total_revenue:,.0f}", 
+            f"{((total_revenue - target_revenue) / target_revenue * 100):.1f}% vs Target"
+        )
+        col2.metric(
+            "Total Profit", 
+            f"${total_profit:,.0f}", 
+            f"{((total_profit - target_profit) / target_profit * 100):.1f}% vs Target"
+        )
+        col3.metric(
+            "Avg Margin", 
+            f"{avg_margin:.1f}%", 
+            f"{(avg_margin - target_margin):.1f}% vs Target"
+        )
 
-    # Detailed Data View
-    with st.expander("View Detailed Financial Records"):
+        st.divider()
+
+        # VISUALIZATIONS
+        col_chart1, col_chart2 = st.columns(2)
+
+        with col_chart1:
+            st.subheader("Revenue vs Expenses by Month")
+            # Aggregate by month
+            monthly_data = df.groupby('month')[['revenue', 'expenses']].sum().reset_index()
+            # Sort months correctly
+            month_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+            monthly_data['month'] = pd.Categorical(monthly_data['month'], categories=month_order, ordered=True)
+            monthly_data = monthly_data.sort_values('month')
+            
+            fig_bar = px.bar(
+                monthly_data, 
+                x='month', 
+                y=['revenue', 'expenses'], 
+                barmode='group',
+                color_discrete_map={'revenue': '#00CC96', 'expenses': '#EF553B'}
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+        with col_chart2:
+            st.subheader("Profit Distribution by Department")
+            dept_data = df.groupby('department')['profit'].sum().reset_index()
+            fig_pie = px.pie(dept_data, values='profit', names='department', hole=0.4)
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+    with tab2:
+        st.subheader("Revenue Forecast (Next 3 Months)")
+        st.info("Simple linear regression forecast based on current year's monthly data.")
+        
+        # Prepare data for forecasting
+        forecast_df = df.groupby('month')['revenue'].sum().reset_index()
+        month_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        forecast_df['month_idx'] = forecast_df['month'].apply(lambda x: month_order.index(x) + 1)
+        forecast_df = forecast_df.sort_values('month_idx')
+        
+        if len(forecast_df) > 1:
+            # Linear Regression
+            x = forecast_df['month_idx'].values
+            y = forecast_df['revenue'].values
+            
+            # Fit polynomial (degree 1 = linear)
+            z = np.polyfit(x, y, 1)
+            p = np.poly1d(z)
+            
+            # Predict next 3 months
+            last_month_idx = x[-1]
+            future_months_idx = np.array([last_month_idx + 1, last_month_idx + 2, last_month_idx + 3])
+            future_revenue = p(future_months_idx)
+            
+            # Create future dataframe
+            future_months_names = []
+            for idx in future_months_idx:
+                month_num = (int(idx) - 1) % 12
+                future_months_names.append(month_order[month_num])
+                
+            future_df = pd.DataFrame({
+                'month': future_months_names,
+                'revenue': future_revenue,
+                'type': 'Forecast'
+            })
+            
+            forecast_df['type'] = 'Historical'
+            
+            # Combine
+            combined_df = pd.concat([forecast_df[['month', 'revenue', 'type']], future_df])
+            
+            # Plot
+            fig_forecast = px.line(
+                combined_df, 
+                x='month', 
+                y='revenue', 
+                color='type', 
+                markers=True,
+                line_shape='spline'
+            )
+            fig_forecast.add_vline(x=forecast_df.iloc[-1]['month'], line_dash="dash", line_color="gray")
+            st.plotly_chart(fig_forecast, use_container_width=True)
+        else:
+            st.warning("Not enough data points to generate a forecast.")
+
+    with tab3:
+        st.subheader("Detailed Financial Records")
+        
+        # Download Button
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download Data as CSV",
+            data=csv,
+            file_name=f'financial_data_{selected_year}.csv',
+            mime='text/csv',
+        )
+        
         st.dataframe(df, use_container_width=True)
